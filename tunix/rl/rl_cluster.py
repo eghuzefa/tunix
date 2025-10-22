@@ -37,6 +37,7 @@ import jaxtyping
 import optax
 from tunix.generate import mappings
 # Internal placeholder for vllm rollout worker stub, don't change this line.
+# Internal placeholder for sglang_jax rollout worker stub, don't change this line.
 from tunix.rl import reshard
 from tunix.rl import trainer as rl_trainer
 from tunix.rl import utils as rl_utils
@@ -182,12 +183,20 @@ class ClusterConfig:
   )
   rollout_mapping_config: mappings.MappingConfig | None = None
 
+  rollout_vllm_server_mode: bool = False
   rollout_vllm_model_version: str = ""
   rollout_vllm_lora_config: dict[str, Any] | None = None
   rollout_vllm_hbm_utilization: float = 0.2
   rollout_vllm_init_with_random_weights: bool = True
   rollout_vllm_tpu_backend_type: str | None = None
   rollout_vllm_swap_space_size_gb: float = 4.0  # in GiB
+
+  rollout_sglang_jax_model_version: str = ""
+  rollout_sglang_jax_context_length: int = 8192
+  rollout_sglang_jax_mem_fraction_static: float = 0.2
+  rollout_sglang_jax_init_with_random_weights: bool = True
+  rollout_sglang_jax_disable_radix_cache: bool = True
+  rollout_sglang_jax_enable_deterministic_sampling: bool = False
 
 
 class RLCluster:
@@ -360,6 +369,7 @@ class RLCluster:
     if self.cluster_config.rollout_engine not in [
         "vanilla",
         "vllm",
+        "sglang_jax",
     ]:
       raise ValueError(
           "`cluster_config.rollout_engine` should be one of `'vanilla'` or "
@@ -415,7 +425,24 @@ class RLCluster:
           lora_config=self.cluster_config.rollout_vllm_lora_config,
           rollout_engine=backend,
           mapping_config=self.cluster_config.rollout_mapping_config,
+          server_mode=self.cluster_config.rollout_vllm_server_mode,
       )
+    elif self.cluster_config.rollout_engine == "sglang_jax":
+      from tunix.rl.rollout import sglang_jax_rollout
+
+      self._rollout = sglang_jax_rollout.SglangJaxRollout(
+          self.rollout_actor,
+          self.tokenizer,
+          mesh=self.r2m[Role.ROLLOUT],
+          model_version=self.cluster_config.rollout_sglang_jax_model_version,
+          context_length=self.cluster_config.rollout_sglang_jax_context_length,
+          mem_fraction_static=self.cluster_config.rollout_sglang_jax_mem_fraction_static,
+          init_with_random_weights=self.cluster_config.rollout_sglang_jax_init_with_random_weights,
+          disable_radix_cache=self.cluster_config.rollout_sglang_jax_disable_radix_cache,
+          enable_deterministic_sampling=self.cluster_config.rollout_sglang_jax_enable_deterministic_sampling,
+          mapping_config=self.cluster_config.rollout_mapping_config,
+      )
+
     else:
       raise NotImplementedError(
           f"Rollout engine {self.cluster_config.rollout_engine} not supported"

@@ -83,9 +83,10 @@ class RLLearner(abc.ABC):
         else None
     )
 
-    # adjust global steps based on the number of iterations.
+    self._training_config = self.rl_cluster.cluster_config.training_config
+
     self.rl_cluster.global_steps = (
-        self.rl_cluster.actor_trainer.train_steps // self._num_iterations()
+        self.rl_cluster.actor_trainer.restored_global_step()
     )
 
     self._iter_steps = 0
@@ -111,7 +112,6 @@ class RLLearner(abc.ABC):
     self.executor = futures.ThreadPoolExecutor(max_workers=1)
     self._last_iter_step = self.rl_cluster.actor_trainer.iter_steps
 
-    self._training_config = self.rl_cluster.cluster_config.training_config
     self._rollout_micro_batch_size = (
         self._training_config.rollout_micro_batch_size
     )
@@ -185,35 +185,38 @@ class RLLearner(abc.ABC):
             f"Content of r: {r}"
         )
       rewards[:, i] = np.array(r)
+      for reward in r:
+        self.rl_cluster.buffer_metrics(
+            {
+                f"rewards/{reward_fn.__name__}": (
+                    reward,
+                    np.mean,
+                ),
+            },
+            mode=mode,
+        )
+
+    rewards = np.nansum(rewards, axis=1)
+    for trajectory_idx in range(len(prompts)):
+      trajectory_rewards = rewards[trajectory_idx]
       self.rl_cluster.buffer_metrics(
           {
-              f"rewards/{reward_fn.__name__}": (
-                  np.mean(r),
+              "rewards/sum": (
+                  np.sum(trajectory_rewards),
                   np.mean,
               ),
           },
           mode=mode,
       )
-
-    rewards = np.nansum(rewards, axis=1)
-    self.rl_cluster.buffer_metrics(
-        {
-            "rewards/overall": (
-                np.mean(rewards),
-                np.mean,
-            ),
-        },
-        mode=mode,
-    )
-    self.rl_cluster.buffer_metrics(
-        {
-            "rewards/min": (
-                np.min(rewards),
-                np.min,
-            ),
-        },
-        mode=mode,
-    )
+      self.rl_cluster.buffer_metrics(
+          {
+              "rewards/min": (
+                  np.min(trajectory_rewards),
+                  np.min,
+              ),
+          },
+          mode=mode,
+      )
     for p, c in zip(prompts, completions):
       self.rl_cluster.buffer_metrics(
           {
@@ -405,7 +408,8 @@ class RLLearner(abc.ABC):
         ):  # fast forward the iterator if loading from a previous checkpoint.
           next(iterator)
           self._iter_steps += 1
-          logging.info("Fast forwarded %d micro-batches.", self._iter_steps)
+          if self._iter_steps == self._last_iter_step:
+            logging.info("Fast forwarded %d micro-batches.", self._iter_steps)
 
         # Fetch one training micro-batch
         example = next(iterator)
